@@ -1,5 +1,6 @@
-# TWRP 3.7.0 board config — Samsung W2017 (SM-W2017)
-# WIP: every value marked TBD must be read from the stock recovery.img / PIT.
+# TWRP 3.7.0 board config — Samsung W2017 (SM-W2017, veyronltectc)
+# Values for boot image layout were read from the stock recovery.img of
+# W2017KEU1ARG1 (identical in W2017KEU1APJ7).
 
 DEVICE_PATH := device/samsung/veyronltectc_twrp
 
@@ -20,25 +21,27 @@ TARGET_BOARD_PLATFORM := msm8996
 TARGET_BOOTLOADER_BOARD_NAME := msm8996
 TARGET_NO_BOOTLOADER := true
 TARGET_NO_RADIOIMAGE := true
+TARGET_OTA_ASSERT_DEVICE := veyronltectc,veyronlte,SM-W2017
 
-# Kernel / dtb (extract from stock recovery.img)
+# Kernel / dtb — taken from stock recovery.img (W2017KEU1ARG1)
 TARGET_PREBUILT_KERNEL := $(DEVICE_PATH)/prebuilt/Image.gz
 TARGET_PREBUILT_DTB := $(DEVICE_PATH)/prebuilt/dtb.img
+BOARD_KERNEL_IMAGE_NAME := Image.gz
+BOARD_KERNEL_SEPARATED_DT := true
 
-# Boot image — TBD: read with unpackbootimg from stock recovery.img
-BOARD_KERNEL_CMDLINE := console=ttyHSL0,115200,n8 androidboot.console=ttyHSL0 androidboot.hardware=qcom androidboot.selinux=permissive user_debug=31 msm_rtb.filter=0x37 ehci-hcd.park=3 lpm_levels.sleep_disabled=1
+# Boot image layout (from stock recovery.img header)
+BOARD_KERNEL_CMDLINE := console=null androidboot.hardware=qcom user_debug=31 msm_rtb.filter=0x37 ehci-hcd.park=3 lpm_levels.sleep_disabled=1 cma=24M@0-0xffffffff rcupdate.rcu_expedited=1
 BOARD_KERNEL_BASE := 0x80000000
 BOARD_KERNEL_PAGESIZE := 4096
-# TBD: kernel/ramdisk/tags offsets and board string are model specific
-BOARD_MKBOOTIMG_ARGS := --kernel_offset 0x00008000 --ramdisk_offset 0x02200000 --tags_offset 0x02000000 --board TBD
+BOARD_MKBOOTIMG_ARGS := --kernel_offset 0x00008000 --ramdisk_offset 0x02200000 --tags_offset 0x02000000 --board RILPF15A000RU
 BOARD_CUSTOM_BOOTIMG_MK := $(DEVICE_PATH)/bootimg.mk
 
-# Partitions — TBD: verify against PIT / by-name listing
-BOARD_BOOTIMAGE_PARTITION_SIZE := 0x004800000
-BOARD_RECOVERYIMAGE_PARTITION_SIZE := 0x004800000
-BOARD_SYSTEMIMAGE_PARTITION_SIZE := 0x0F0000000
-BOARD_USERDATAIMAGE_PARTITION_SIZE := 0x0
-BOARD_CACHEIMAGE_PARTITION_SIZE := 0x0
+# Partitions — TODO: verify with `blockdev --getsize64` on the device, these are
+# taken from the PIT (VEYRONLTE_CHN_CTC.pit) and the stock image sizes.
+BOARD_BOOTIMAGE_PARTITION_SIZE := 0x03000000
+BOARD_RECOVERYIMAGE_PARTITION_SIZE := 0x04000000
+BOARD_SYSTEMIMAGE_PARTITION_SIZE := 0x190000000
+BOARD_CACHEIMAGE_PARTITION_SIZE := 0x10000000
 BOARD_FLASH_BLOCK_SIZE := 131072
 
 # Recovery
@@ -47,12 +50,10 @@ TARGET_USERIMAGES_USE_EXT4 := true
 TARGET_USERIMAGES_USE_F2FS := true
 BOARD_SUPPRESS_SECURE_ERASE := true
 TW_THEME := portrait_hdpi
-TW_INCLUDE_CRYPTO := true
-TW_CRYPTO_USE_SYSTEM_VOLD := true
-TW_EXCLUDE_DEFAULT_USB_INIT := true
+TW_INCLUDE_CRYPTO := false
+TW_EXCLUDE_DEFAULT_USB_INIT := false
 TW_HAS_DOWNLOAD_MODE := true
 TW_USE_TOOLBOX := true
-TW_INPUT_BLACKLIST := ""
 TW_MAX_BRIGHTNESS := 255
 TW_DEFAULT_BRIGHTNESS := 128
 TWRP_INCLUDE_LOGCAT := true

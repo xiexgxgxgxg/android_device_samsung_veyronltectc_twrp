@@ -1,10 +1,11 @@
 # TWRP 3.7.0 device tree — Samsung W2017 (SM-W2017 / veyronltectc)
 
-> **STATUS: WORK IN PROGRESS — NOT FLASHABLE.**
+> **STATUS: WORK IN PROGRESS — NOT TESTED ON HARDWARE, DO NOT FLASH BLINDLY.**
 >
-> The tree compiles only after the placeholders in `BoardConfig.mk` are replaced
-> with values read from the device's own stock images. Flashing a wrong recovery
-> to a Samsung bootloader-unlocked device can hard-brick it.
+> Boot image geometry and prebuilt kernel/dtb were taken from the stock
+> `recovery.img` of `W2017KEU1ARG1` (identical layout in `W2017KEU1APJ7`), so the
+> tree should now produce a recovery.img with the right header. Partition sizes
+> and the fstab still need verification on the device.
 
 ## What this is
 
@@ -25,18 +26,24 @@ trees (`heroqltechn`) and the LineageOS 18.1 device tree in
   `.tar`, and the bootloader requires the `SEANDROIDENFORCE` trailer (see
   `bootimg.mk`) unless the image is signed.
 
-## Placeholders that MUST be filled in
+## Values taken from the stock firmware
 
-| Value | Where it comes from |
+| Value | Source |
 |---|---|
-| `BOARD_KERNEL_BASE`, offsets, `--board` string, cmdline | `unpackbootimg` on stock `recovery.img` |
-| `TARGET_PREBUILT_KERNEL` / `TARGET_PREBUILT_DTB` | stock `recovery.img` (kernel + dtb) |
-| `BOARD_RECOVERYIMAGE_PARTITION_SIZE` etc. | PIT (`W2017*.pit`) or `ls -l /dev/block/bootdevice/by-name/` |
-| `twrp.fstab` entries | stock `recovery.img` ramdisk `fstab.qcom` |
+| `BOARD_KERNEL_BASE` 0x80000000, offsets `0x8000`/`0x2200000`/`0x2000000` | stock `recovery.img` header |
+| `--board RILPF15A000RU` | stock recovery (boot uses `...KU`) |
+| cmdline `console=null androidboot.hardware=qcom ...` | stock recovery |
+| `prebuilt/Image.gz`, `prebuilt/dtb.img` (QCDT, 1872144 bytes) | stock recovery |
+| fstab entries | stock `fstab.qcom` (`system`, `userdata`, `efs`, `hidden`→preload) |
 
-Put the extracted `Image.gz` / `dtb.img` into `prebuilt/` (see
-`prebuilt/README.md`). Once the device is available, `twrpdtgen` on the stock
-`recovery.img` can bootstrap most of these values.
+## Still to verify on the device
+
+- Partition sizes (`blockdev --getsize64 /dev/block/bootdevice/by-name/*`) —
+  current values come from the PIT and image sizes.
+- Whether recovery boots on the inner or outer panel (the kernel picks the panel
+  from the folder hall state), and whether TWRP's touch maps correctly.
+- Keypad keylayout.
+- Encrypted /data (6.0.1 uses FDE with a footer; `TW_INCLUDE_CRYPTO` is off).
 
 ## Build
 
