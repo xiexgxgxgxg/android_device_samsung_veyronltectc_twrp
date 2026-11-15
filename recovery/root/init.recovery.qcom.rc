@@ -23,3 +23,8 @@ service twrp-log /sbin/sh /sbin/twrp-log.sh
     class main
     user root
     oneshot
+
+service persistlog /sbin/sh /sbin/persist-log.sh
+    class main
+    user root
+    oneshot
