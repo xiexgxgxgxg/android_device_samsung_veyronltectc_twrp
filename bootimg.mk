@@ -9,27 +9,20 @@ $(PRODUCT_OUT)/kernel: $(TARGET_PREBUILT_KERNEL)
 	@echo "Copy prebuilt kernel: $@"
 	$(hide) cp -f $< $@
 
+# BOARD_KERNEL_SEPARATED_DT makes the build pass --dt $(PRODUCT_OUT)/dt.img, so
+# the prebuilt QCDT image has to be installed under that name.
+$(INSTALLED_DTIMAGE_TARGET): $(TARGET_PREBUILT_DTB)
+	@echo "Copy prebuilt dt image: $@"
+	$(hide) cp -f $< $@
+
 # A boot image is only required because the recovery ramdisk depends on it. It
 # is built from the same prebuilt kernel and dtb so the tree stays consistent.
-$(INSTALLED_BOOTIMAGE_TARGET): $(MKBOOTIMG) $(PRODUCT_OUT)/kernel $(INSTALLED_RAMDISK_TARGET) $(TARGET_PREBUILT_DTB)
+$(INSTALLED_BOOTIMAGE_TARGET): $(MKBOOTIMG) $(PRODUCT_OUT)/kernel $(INSTALLED_RAMDISK_TARGET) $(INSTALLED_DTIMAGE_TARGET)
 	@echo "Making boot image: $@"
-	$(hide) $(MKBOOTIMG) --kernel $(PRODUCT_OUT)/kernel \
-		--ramdisk $(INSTALLED_RAMDISK_TARGET) \
-		--base $(BOARD_KERNEL_BASE) \
-		--pagesize $(BOARD_KERNEL_PAGESIZE) \
-		--kernel_offset 0x00008000 \
-		--ramdisk_offset 0x02200000 \
-		--tags_offset 0x02000000 \
-		--board RILPF15A000KU \
-		--cmdline "$(BOARD_KERNEL_CMDLINE)" \
-		--dt $(TARGET_PREBUILT_DTB) \
-		--output $@
+	$(hide) $(MKBOOTIMG) $(INTERNAL_BOOTIMAGE_ARGS) $(BOARD_MKBOOTIMG_ARGS) --output $@
+	$(hide) $(call assert-max-image-size,$@,$(BOARD_BOOTIMAGE_PARTITION_SIZE))
 
-ifdef TARGET_PREBUILT_DTB
-    BOARD_MKBOOTIMG_ARGS += --dt $(TARGET_PREBUILT_DTB)
-endif
-
-$(INSTALLED_RECOVERYIMAGE_TARGET): $(MKBOOTIMG) $(recovery_kernel) $(recovery_ramdisk)
+$(INSTALLED_RECOVERYIMAGE_TARGET): $(MKBOOTIMG) $(recovery_kernel) $(recovery_ramdisk) $(RECOVERYIMAGE_EXTRA_DEPS)
 	@echo "----- Making recovery image ------"
 	$(hide) $(MKBOOTIMG) $(INTERNAL_RECOVERYIMAGE_ARGS) $(BOARD_MKBOOTIMG_ARGS) --output $@ --ramdisk $(recovery_ramdisk)
 	@echo "----- Lying about SEAndroid state to Samsung bootloader ------"
