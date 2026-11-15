@@ -2,7 +2,7 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/core_64_bit.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/aosp_base_telephony.mk)
 $(call inherit-product, vendor/omni/config/common.mk)
 
-$(call inherit-product, device/samsung/veyronltectc_twrp/device.mk)
+$(call inherit-product, device/samsung/veyronltectc/device.mk)
 
 PRODUCT_DEVICE := veyronltectc
 PRODUCT_NAME := omni_veyronltectc
