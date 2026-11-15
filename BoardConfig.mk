@@ -50,6 +50,10 @@ TARGET_RECOVERY_PIXEL_FORMAT := "RGBX_8888"
 TARGET_USERIMAGES_USE_EXT4 := true
 TARGET_USERIMAGES_USE_F2FS := true
 BOARD_SUPPRESS_SECURE_ERASE := true
+# The stock kernel has CONFIG_RD_LZMA; LZMA brings the 12.7 MB gzip recovery
+# ramdisk down to ~7.2 MB, which is the stock size the bootloader expects.
+LZMA_RAMDISK_TARGETS := recovery
+
 TW_THEME := portrait_hdpi
 TW_INCLUDE_CRYPTO := false
 TW_EXCLUDE_DEFAULT_USB_INIT := false
