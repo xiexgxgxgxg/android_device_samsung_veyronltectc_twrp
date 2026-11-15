@@ -17,6 +17,7 @@ on init
 
 on boot
     start twrp-log
+    exec - root root -- /sbin/clear-bcb.sh
 
 service twrp-log /sbin/sh /sbin/twrp-log.sh
     class main
