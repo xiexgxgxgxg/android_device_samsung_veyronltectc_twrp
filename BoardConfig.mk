@@ -60,6 +60,11 @@ TW_EXCLUDE_DEFAULT_USB_INIT := false
 TW_HAS_DOWNLOAD_MODE := true
 TW_USE_TOOLBOX := true
 TW_MAX_BRIGHTNESS := 255
-TW_DEFAULT_BRIGHTNESS := 128
-TWRP_INCLUDE_LOGCAT := true
-TARGET_USES_LOGD := true
+TW_DEFAULT_BRIGHTNESS := 162
+# Matches the flags used by the msm8996 Samsung TWRP trees (heroqlte,
+# graceqlte). The RTC fix is required on this platform and logd/logcat are
+# deliberately left out, again as in those trees.
+TARGET_RECOVERY_QCOM_RTC_FIX := true
+RECOVERY_SDCARD_ON_DATA := true
+TW_NO_REBOOT_BOOTLOADER := true
+TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"
