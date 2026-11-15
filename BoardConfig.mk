@@ -2,7 +2,7 @@
 # Values for boot image layout were read from the stock recovery.img of
 # W2017KEU1ARG1 (identical in W2017KEU1APJ7).
 
-DEVICE_PATH := device/samsung/veyronltectc_twrp
+DEVICE_PATH := device/samsung/veyronltectc
 
 # Architecture
 TARGET_ARCH := arm64
