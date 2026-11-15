@@ -2,7 +2,10 @@
 # Partition names taken from the stock fstab.qcom (W2017KEU1ARG1).
 /boot       emmc /dev/block/bootdevice/by-name/boot
 /recovery   emmc /dev/block/bootdevice/by-name/recovery
-/system     ext4 /dev/block/bootdevice/by-name/system
+# TWRP mounts /system read-write by default when the partition has writes,
+# which destroys dm-verity on this device. Keep it out of the fstab until the
+# port is stable; recovery does not need it for basic operation.
+#/system     ext4 /dev/block/bootdevice/by-name/system
 /data       ext4 /dev/block/bootdevice/by-name/userdata    flags=display="Data";wipeingui;backup=1
 /cache      ext4 /dev/block/bootdevice/by-name/cache
 /efs        ext4 /dev/block/bootdevice/by-name/efs         flags=backup=1;display="EFS"
