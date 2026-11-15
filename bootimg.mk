@@ -14,6 +14,7 @@ $(PRODUCT_OUT)/kernel: $(TARGET_PREBUILT_KERNEL)
 $(INSTALLED_DTIMAGE_TARGET): $(TARGET_PREBUILT_DTB)
 	@echo "Copy prebuilt dt image: $@"
 	$(hide) cp -f $< $@
+	$(hide) truncate -s %4096 $@
 
 # A boot image is only required because the recovery ramdisk depends on it. It
 # is built from the same prebuilt kernel and dtb so the tree stays consistent.
@@ -27,6 +28,8 @@ $(INSTALLED_RECOVERYIMAGE_TARGET): $(MKBOOTIMG) $(recovery_kernel) $(recovery_ra
 	$(hide) $(MKBOOTIMG) $(INTERNAL_RECOVERYIMAGE_ARGS) $(BOARD_MKBOOTIMG_ARGS) --output $@ --ramdisk $(recovery_ramdisk)
 	@echo "----- Lying about SEAndroid state to Samsung bootloader ------"
 	$(hide) echo -n "SEANDROIDENFORCE" >> $(INSTALLED_RECOVERYIMAGE_TARGET)
+	@echo "----- Adding the 256-byte signature slot the stock images carry ------"
+	$(hide) dd if=/dev/zero bs=256 count=1 >> $(INSTALLED_RECOVERYIMAGE_TARGET) 2>/dev/null
 	$(hide) $(call assert-max-image-size,$@,$(BOARD_RECOVERYIMAGE_PARTITION_SIZE),raw)
 	$(hide) tar -C $(PRODUCT_OUT) -H ustar -c recovery.img > $(FLASH_IMAGE_TARGET)
 
