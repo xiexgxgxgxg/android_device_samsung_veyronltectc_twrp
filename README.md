@@ -57,3 +57,23 @@ setup, and `/sys/class/lcd/panel/force_flip` exists as a possible override.
 - Whether the panel lights up at all, and on which of the two screens.
 - Whether TWRP's touch handling matches the Synaptics DSX driver.
 - Whether the keypad produces usable events in recovery.
+
+## Getting into recovery without a key combination
+
+This device has no key combination that reliably reaches recovery, so the
+bootloader control block (BCB) is used instead. Android and Odin ask for a
+one-shot recovery boot by writing `boot-recovery` into the `misc` partition;
+the bootloader reads it once and then recovery clears it.
+
+```bash
+# from rooted Android, right before starting Odin
+adb shell su -c 'printf boot-recovery > /dev/block/bootdevice/by-name/misc'
+```
+
+Then flash `recovery.tar` in Odin with **Auto Reboot enabled**. The device
+reboots into TWRP instead of Android. `clear-bcb.sh` wipes the command field as
+soon as recovery starts, so the next reboot goes back to the system even if
+recovery never manages to boot.
+
+If the flash still lands in Android, `adb reboot recovery` does the same thing
+(framework writes the same BCB).
