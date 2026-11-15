@@ -1,14 +1,13 @@
-# TWRP fstab — Samsung W2017 (vEYRONLTE_CHN_CTC)
+# TWRP fstab — Samsung W2017 (SM-W2017, veyronltectc)
 # Partition names taken from the stock fstab.qcom (W2017KEU1ARG1).
 /boot       emmc /dev/block/bootdevice/by-name/boot
 /recovery   emmc /dev/block/bootdevice/by-name/recovery
 /system     ext4 /dev/block/bootdevice/by-name/system
-/data       ext4 /dev/block/bootdevice/by-name/userdata    flags=encryptable=footer;length=-16384
+/data       ext4 /dev/block/bootdevice/by-name/userdata    flags=display="Data";wipeingui;backup=1
 /cache      ext4 /dev/block/bootdevice/by-name/cache
 /efs        ext4 /dev/block/bootdevice/by-name/efs         flags=backup=1;display="EFS"
 /modemst1   emmc /dev/block/bootdevice/by-name/modemst1    flags=backup=1;subpartitionof=/efs
 /modemst2   emmc /dev/block/bootdevice/by-name/modemst2    flags=backup=1;subpartitionof=/efs
 /persist    ext4 /dev/block/bootdevice/by-name/persist     flags=backup=1;display="Persist"
-/preload    ext4 /dev/block/bootdevice/by-name/hidden      flags=display="Preload"
 /external_sd vfat /dev/block/mmcblk1p1 /dev/block/mmcblk1   flags=display="MicroSD";storage;wipeingui;removable
-/usb_otg    vfat /dev/block/sdg1 /dev/block/sdg            flags=display="USB-OTG";storage;wipeingui;removable
+/usb_otg    vfat /dev/block/sdb1 /dev/block/sdb            flags=display="USB-OTG";storage;wipeingui;removable
