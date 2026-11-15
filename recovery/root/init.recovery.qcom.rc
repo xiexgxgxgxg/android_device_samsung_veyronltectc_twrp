@@ -1,0 +1,24 @@
+# Recovery init additions for the Samsung W2017 (SM-W2017, veyronltectc).
+#
+# The stock kernel has no CONFIG_USB_CONFIGFS; it exposes the legacy
+# /sys/class/android_usb/android0 gadget, which the default
+# init.recovery.usb.rc already handles. Everything here is additive: it only
+# starts the log service and forces adb to run as root so recovery can be
+# debugged without a working display.
+
+on early-init
+    write /proc/sys/kernel/panic 0
+
+on init
+    # adb must be root from the first start, otherwise a recovery that cannot
+    # talk to its panel is impossible to inspect.
+    setprop service.adb.root 1
+    setprop ro.adb.secure 0
+
+on boot
+    start twrp-log
+
+service twrp-log /sbin/sh /sbin/twrp-log.sh
+    class main
+    user root
+    oneshot
