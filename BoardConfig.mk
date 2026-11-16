@@ -67,4 +67,5 @@ TW_DEFAULT_BRIGHTNESS := 162
 TARGET_RECOVERY_QCOM_RTC_FIX := true
 RECOVERY_SDCARD_ON_DATA := true
 TW_NO_REBOOT_BOOTLOADER := true
+TW_MTP_LEGACY := true
 TW_BRIGHTNESS_PATH := "/sys/class/leds/lcd-backlight/brightness"

@@ -1,0 +1,26 @@
+#!/sbin/sh
+#
+# su replacement: no setuid bits, no kernel rooting detection. The command is
+# handed to /sbin/rootsvc.sh, which init runs as root.
+
+if [ "$1" = "-c" ]; then
+    CMD="$2"
+elif [ $# -gt 0 ]; then
+    CMD="$*"
+else
+    CMD="/sbin/sh"
+fi
+
+rm -f /tmp/su.rc /tmp/su.out
+printf '%s\n' "$CMD" > /tmp/su.cmd.new
+mv /tmp/su.cmd.new /tmp/su.cmd
+i=0
+while [ ! -f /tmp/su.rc ] && [ $i -lt 600 ]; do
+    sleep 0.1
+    i=$((i + 1))
+done
+cat /tmp/su.out 2>/dev/null
+rc=$(cat /tmp/su.rc 2>/dev/null)
+rm -f /tmp/su.rc /tmp/su.out
+[ -n "$rc" ] && exit "$rc"
+exit 1

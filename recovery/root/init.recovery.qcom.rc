@@ -8,15 +8,18 @@
 
 on early-init
     write /proc/sys/kernel/panic 0
-
-on init
-    # adb must be root from the first start, otherwise a recovery that cannot
-    # talk to its panel is impossible to inspect.
+    # adbd is started from init.recovery.usb.rc in the "fs" stage, so these
+    # properties must be set before that or adb comes up as the shell user and
+    # cannot read or write raw partitions.
     setprop service.adb.root 1
     setprop ro.adb.secure 0
 
 on boot
+    # ueventd creates the by-name links under the platform path; TWRP (and
+    # Android fstabs) expect the historical /dev/block/bootdevice symlink.
+    symlink /dev/block/platform/soc/624000.ufshc /dev/block/bootdevice
     start twrp-log
+    start rootsvc
     exec - root root -- /sbin/clear-bcb.sh
 
 service twrp-log /sbin/sh /sbin/twrp-log.sh
@@ -25,6 +28,14 @@ service twrp-log /sbin/sh /sbin/twrp-log.sh
     oneshot
 
 service persistlog /sbin/sh /sbin/persist-log.sh
+    class main
+    user root
+    oneshot
+
+# Root command executor for /sbin/su. Runs as root from init, so no setuid
+# binary is needed (executing a setuid-root helper trips Samsung's rooting
+# detection and reboots the device).
+service rootsvc /sbin/sh /sbin/rootsvc.sh
     class main
     user root
     oneshot
