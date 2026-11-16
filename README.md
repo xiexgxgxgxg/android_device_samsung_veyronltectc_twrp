@@ -1,79 +1,96 @@
-# TWRP 3.7 device tree — Samsung W2017 (SM-W2017 / veyronltectc)
+# TWRP device tree for the Samsung W2017 (SM-W2017, veyronltectc)
 
-> **STATUS: WORK IN PROGRESS — NOT TESTED ON HARDWARE.**
->
-> Boot image geometry, kernel and dtb come from the stock `recovery.img` of
-> `W2017KEU1ARG1`; partition sizes were read from the running device with
-> `blockdev`. The tree is expected to compile; whether recovery can bring up the
-> panel is the open question.
+Working recovery: TWRP 3.7.0_9 on the stock Samsung 3.18.20 kernel (msm8996).
 
-## Device facts used here
+Status: display, touch, dual-screen switching, internal/external storage, adb
+and MTP all work. `adb shell` is a root shell.
 
-| | |
-|---|---|
-| SoC | Qualcomm Snapdragon 820 (msm8996), kernel 3.18.20 |
-| Stock recovery | `W2017KEU1ARG1`, boot header v0 + `QCDT` dt appended |
-| Boot geometry | base `0x80000000`, kernel `0x8000`, ramdisk `0x2200000`, tags `0x2000000`, page 4096, board `RILPF15A000RU` |
-| Partitions | boot/recovery 76 MB, system 5.5 GB, cache 200 MB, userdata 53 GB |
-| Display | dual 4.2" 1080x1920 panels, switched in-kernel (`lcd_id` / `lcd_id2`, `hall_ic`) |
-| Touch | Synaptics DSX (`sec_touchscreen`, event4) |
-| Keypad | `veyronlte_3x4-keypad` (event2), plus `sec_touchkey` (event3) |
-| USB | legacy `android_usb` gadget (no `CONFIG_USB_CONFIGFS` in the kernel) |
+## Changes made to the TWRP sources
 
-## Build
+The TWRP tree in `/data/twrp/source-9.0` (Android 9 base) needed a number of
+changes for this device. They are committed in the corresponding git
+repositories of that tree.
 
-```bash
-source build/envsetup.sh
-lunch omni_veyronltectc-eng
-mka recoveryimage
-```
+### bootable/recovery
 
-Output: `out/target/product/veyronltectc/recovery.img` and, via `bootimg.mk`,
-an Odin-flashable `recovery.tar`.
+* `etc/init.recovery.usb.rc` (new, replaces the generated file)
+  - Legacy `android_usb` gadget only. The kernel Kconfig puts `USB_CONFIGFS`
+    and `USB_G_ANDROID` in the same `choice`, so configfs cannot be used
+    together with the Samsung gadget, and configfs never pulled the UDC up on
+    this dwc3 controller.
+  - The function list is written exactly once (`mtp,adb`, Samsung VID/PID
+    `04E8:6860`) and everything is bound before `adbd` starts.
+  - Every later `sys.usb.config` change is turned into a no-op `setprop`.
+    Rewriting `functions` re-binds functionfs and kills the running adb
+    connection (that was the cause of the "adb offline" loops).
+  - `functionfs` is mounted here, before the gadget functions are bound;
+    the mount in the generic `init.rc` was removed for the same reason.
+* `etc/init.rc`
+  - adbd runs as root (`service.adb.root=1` is set from the device rc) and has
+    no `stdio_to_kmsg`; routing adbd stdio through kmsg can block its main
+    loop on a full ring buffer.
+  - The generic `mount functionfs` and the adbd restart triggers on
+    `service.adb.root` are removed; both re-enumerate the gadget.
+* `data.cpp`
+  - MTP is enabled by default and the settings for it match this device.
+* `twrp.cpp`
+  - Logs the reboot reason (`VEYRON-EXIT`) before leaving the main loop.
+* `etc/init.recovery.hlthchrg2*.rc`
+  - `critical` flags commented out (Samsung health-charging services do not
+    exist in this ramdisk, a critical service that exits reboots recovery).
 
-## Flashing
+### system/core/init
 
-Odin, **AP slot only**, `Auto Reboot` disabled. Before booting the system again,
-mount `/system` read-write in TWRP and delete `/system/recovery-from-boot.p`,
-otherwise Android restores the stock recovery on the next boot.
+* `init.cpp`
+  - skip `mmap_rnd_bits` hardening when the 3.18 sysctl is missing
+  - `restorecon /init` failure is a warning, not fatal
+  - null guards for `property_set("ro.boottime.init...")`
+  - SELinux initialisation skipped (this kernel has no usable policy)
+  - breadcrumb markers written to persdata for debugging
+  - a fatal error is written to persdata instead of rebooting
+* `log.cpp`, `security.cpp`, `property_service.cpp`
+  - matching guards for the same 3.18 kernel limitations
+* `system/core/adb/daemon/main.cpp`
+  - adbd never drops privileges in recovery
 
-## Debugging without a display
+### Kernel (branch `veyron-twrp`)
 
-There is no known key combination that reaches recovery on this device, so two
-channels are prepared:
+* `CONFIG_SEC_RESTRICT_SETUID`, `SEC_RESTRICT_FORK`, `SEC_RESTRICT_ROOTING`
+  disabled. This kernel is only used by TWRP and LineageOS; with these off,
+  `adb shell` comes up as root and executing setuid helpers no longer trips
+  Samsung's rooting detection (which rebooted the device).
+* `CONFIG_USB_G_ANDROID=y` with `CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE=y`
+  (the stock build configuration) and `functions=mtp,adb`.
+* `f_mtp.c`: relative `configfs.h` include, `__maybe_unused` on the helpers
+  that are only used by the legacy gadget.
+* `usb_notifier_qcom.c`: `set_ncm_ready` stub when the legacy gadget is off.
+* `drivers/misc/veyron_lastlog.c`: clears the bootloader control block at
+  late init so a recovery that cannot start does not loop back into recovery.
 
-* **adb** — adbd is forced to start as root (`init.recovery.qcom.rc`).
-* **on-disk log** — `twrp-log.sh` writes `dmesg`, `/tmp/recovery.log`, the kernel
-  cmdline and the display/input inventory to `/cache/twrplog` every 5 s and
-  mirrors it to `/data/media/twrplog`. After a failed attempt, boot Android and
-  read `/cache/twrplog` (root) to see how far recovery got.
+## Ramdisk scripts (this device tree)
 
-The panel is selected by the kernel from the folder hall state; recovery may
-therefore come up on the outer panel. `dmesg` in the log records the mdss panel
-setup, and `/sys/class/lcd/panel/force_flip` exists as a possible override.
+* `recovery/root/init.recovery.qcom.rc`
+  - creates the `/dev/block/bootdevice` symlink that the TWRP fstab expects
+  - starts the log services and the root command service
+* `recovery/root/sbin/twrp-start.sh`
+  - runs `/sbin/recovery` and mirrors its output and `recovery.log` to
+    `/dev/kmsg`
+* `recovery/root/sbin/rootsvc.sh` + `sbin/su`
+  - non-setuid root command executor (`su -c ...`). Verified: the device
+    reboots if a setuid-root helper is executed on this kernel with Samsung's
+    restrictions enabled, so no setuid binary is installed.
+* `recovery/root/sbin/twrp-log.sh`, `persist-log.sh`, `clear-bcb.sh`
+  - kernel log persistence and BCB clearing
 
-## Still unknown
+## Known issues
 
-- Whether the panel lights up at all, and on which of the two screens.
-- Whether TWRP's touch handling matches the Synaptics DSX driver.
-- Whether the keypad produces usable events in recovery.
+* TWRP's `MtpServer` exits with `errno 5` when a host closes the MTP session
+  and restarts; transfers work, but the restart is not clean.
+* The 3.18.140 kernel upgrade is work in progress (branch `wip-318140`,
+  79 files / 146 conflict regions left).
 
-## Getting into recovery without a key combination
+## Building
 
-This device has no key combination that reliably reaches recovery, so the
-bootloader control block (BCB) is used instead. Android and Odin ask for a
-one-shot recovery boot by writing `boot-recovery` into the `misc` partition;
-the bootloader reads it once and then recovery clears it.
-
-```bash
-# from rooted Android, right before starting Odin
-adb shell su -c 'printf boot-recovery > /dev/block/bootdevice/by-name/misc'
-```
-
-Then flash `recovery.tar` in Odin with **Auto Reboot enabled**. The device
-reboots into TWRP instead of Android. `clear-bcb.sh` wipes the command field as
-soon as recovery starts, so the next reboot goes back to the system even if
-recovery never manages to boot.
-
-If the flash still lands in Android, `adb reboot recovery` does the same thing
-(framework writes the same BCB).
+The recovery image is built from `omni_veyronltectc-eng` with the prebuilt
+kernel in `prebuilt/Image.gz`; the ramdisk is LZMA compressed and the image is
+signed with the `SEANDROIDENFORCE` marker (see `bootimg.mk`).
