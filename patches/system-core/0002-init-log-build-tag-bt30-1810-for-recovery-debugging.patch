@@ -1,0 +1,26 @@
+From cbd6d28ce43e0dcc970ee9a9a759059d7ff6e8e6 Mon Sep 17 00:00:00 2001
+From: xiexgxgxgxg <xiangtaozichidexie@gmail.com>
+Date: Mon, 16 Nov 2026 18:53:41 +0800
+Subject: [PATCH 2/2] init: log build tag bt30-1810 for recovery debugging
+
+Change-Id: I0054f10b093b5be0beb1f793e84674d5b6c82204
+---
+ init/init.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/init/init.cpp b/init/init.cpp
+index 5dc21f7..74739d2 100644
+--- a/init/init.cpp
++++ b/init/init.cpp
+@@ -639,7 +639,7 @@ int main(int argc, char** argv) {
+     }
+ 
+     veyron_install_handlers();
+-    veyron_mark_at("BUILD=bt28-1750", 7);
++    veyron_mark_at("BUILD=bt29-1800", 7);
+     bool is_first_stage = (getenv("INIT_SECOND_STAGE") == nullptr);
+     veyron_mark_at(is_first_stage ? "MAIN1" : "MAIN2", 6);
+ 
+-- 
+2.53.0
+

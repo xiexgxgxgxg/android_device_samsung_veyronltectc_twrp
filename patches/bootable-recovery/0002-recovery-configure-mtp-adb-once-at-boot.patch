@@ -1,0 +1,94 @@
+From 33959d67219511cf20cdae4a19148cea78f70ec3 Mon Sep 17 00:00:00 2001
+From: xiexgxgxgxg <xiangtaozichidexie@gmail.com>
+Date: Mon, 16 Nov 2026 18:53:40 +0800
+Subject: [PATCH 2/2] recovery: configure mtp,adb once at boot
+
+The legacy android_usb gadget supports mtp and adb in one configuration, but
+rewriting the functions list later re-binds functionfs and drops the adb
+connection. Write it once in on fs and ignore TWRP's later sys.usb.config
+changes. Also log the reboot reason before leaving the main loop.
+
+Change-Id: I5c77d26936b474a0bec6d785baa4a5c9d5c41bbc
+---
+ etc/init.recovery.usb.rc | 44 +++++++++++++++-------------------------
+ twrp.cpp                 |  6 ++++++
+ 2 files changed, 22 insertions(+), 28 deletions(-)
+
+diff --git a/etc/init.recovery.usb.rc b/etc/init.recovery.usb.rc
+index f10b805..eca0931 100644
+--- a/etc/init.recovery.usb.rc
++++ b/etc/init.recovery.usb.rc
+@@ -1,37 +1,25 @@
+-# USB gadget setup via configfs (legacy android_usb gadget is not built).
++# Legacy android_usb gadget setup, configured exactly once at boot.
+ #
+-# Order matters: the configfs "ffs.adb" function creates the functionfs
+-# instance, and only after that can functionfs be mounted and adbd opened.
+-# The UDC is bound last, when adbd already published the adb descriptors.
++# The gadget supports "mtp,adb" in a single configuration, but any later
++# rewrite of /sys/class/android_usb/android0/functions re-binds functionfs and
++# kills the adb connection. So the functions list is written once here and the
++# sys.usb.config changes that TWRP makes afterwards are deliberately ignored.
+ 
+-on init
+-    mkdir /config 0775 root system
+-    mount configfs none /config
+-
+-on boot
+-    mkdir /config/usb_gadget/g1 0777 0 0
+-    write /config/usb_gadget/g1/idVendor 0x04E8
+-    write /config/usb_gadget/g1/idProduct 0x6860
+-    write /config/usb_gadget/g1/bcdUSB 0x0200
+-    write /config/usb_gadget/g1/bcdDevice 0x0200
+-    mkdir /config/usb_gadget/g1/strings/0x409 0777 0 0
+-    write /config/usb_gadget/g1/strings/0x409/serialnumber ${ro.serialno}
+-    write /config/usb_gadget/g1/strings/0x409/manufacturer Samsung
+-    write /config/usb_gadget/g1/strings/0x409/product SM-W2017
+-    mkdir /config/usb_gadget/g1/configs/b.1 0777 0 0
+-    mkdir /config/usb_gadget/g1/configs/b.1/strings/0x409 0777 0 0
+-    write /config/usb_gadget/g1/configs/b.1/MaxPower 500
+-    mkdir /config/usb_gadget/g1/functions/ffs.adb 0777 0 0
+-    mkdir /config/usb_gadget/g1/functions/mtp.gs0 0777 0 0
+-    symlink /config/usb_gadget/g1/functions/ffs.adb /config/usb_gadget/g1/configs/b.1/ffs.adb
+-    symlink /config/usb_gadget/g1/functions/mtp.gs0 /config/usb_gadget/g1/configs/b.1/mtp.gs0
++on fs
++    write /sys/class/android_usb/android0/enable 0
++    write /sys/class/android_usb/android0/idVendor 04E8
++    write /sys/class/android_usb/android0/idProduct 6860
+     mkdir /dev/usb-ffs 0770 shell shell
+     mkdir /dev/usb-ffs/adb 0770 shell shell
+     mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000
++    write /sys/class/android_usb/android0/f_ffs/aliases adb
++    stop adbd
++    write /sys/class/android_usb/android0/functions mtp,adb
++    write /sys/class/android_usb/android0/enable 1
+     start adbd
+-
+-on property:init.svc.adbd=running
+-    write /config/usb_gadget/g1/UDC 6a00000.dwc3
++    write /sys/class/android_usb/android0/iManufacturer ${ro.product.manufacturer}
++    write /sys/class/android_usb/android0/iProduct ${ro.product.model}
++    write /sys/class/android_usb/android0/iSerial ${ro.serialno}
+ 
+ on property:sys.usb.config=none
+     setprop sys.usb.state none
+diff --git a/twrp.cpp b/twrp.cpp
+index ce3b99a..01ed59c 100755
+--- a/twrp.cpp
++++ b/twrp.cpp
+@@ -424,6 +424,12 @@ int main(int argc, char **argv) {
+ 	gui_msg(Msg("rebooting=Rebooting..."));
+ 	string Reboot_Arg;
+ 	DataManager::GetValue("tw_reboot_arg", Reboot_Arg);
++	// Diagnostic: record why recovery is leaving its main loop.
++	{
++		char cbuf[PROPERTY_VALUE_MAX];
++		property_get("twrp.crash_counter", cbuf, "-1");
++		LOGINFO("VEYRON-EXIT: reboot_arg='%s' crash_counter=%s\n", Reboot_Arg.c_str(), cbuf);
++	}
+ 	if (Reboot_Arg == "recovery")
+ 		TWFunc::tw_reboot(rb_recovery);
+ 	else if (Reboot_Arg == "poweroff")
+-- 
+2.53.0
+

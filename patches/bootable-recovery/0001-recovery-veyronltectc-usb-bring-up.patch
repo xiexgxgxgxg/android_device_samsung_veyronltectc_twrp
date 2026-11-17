@@ -1,0 +1,243 @@
+From 8e2253ffb79ee229c343a0331b97c109566611ab Mon Sep 17 00:00:00 2001
+From: xiexgxgxgxg <xiangtaozichidexie@gmail.com>
+Date: Mon, 16 Nov 2026 18:02:14 +0800
+Subject: [PATCH 1/2] recovery: veyronltectc usb bring-up
+
+- init.recovery.usb.rc: configfs gadget (ffs.adb + mtp.gs0)
+- init.rc: adbd as root, no stdio_to_kmsg, single functionfs mount owner
+- data.cpp: MTP default follows the device configuration
+- do not restart adbd on service.adb.root (re-enumerates the gadget)
+
+Change-Id: Ia62d969d5c4f3e80d601f8ac7e39410062cd1e54
+---
+ Android.mk                      | 14 +++++++-
+ data.cpp                        |  6 ++--
+ etc/init.rc                     | 17 +++------
+ etc/init.recovery.hlthchrg25.rc |  2 +-
+ etc/init.recovery.hlthchrg26.rc |  2 +-
+ etc/init.recovery.service.rc    |  7 ++++
+ etc/init.recovery.usb.rc        | 63 ++++++++++++++++++++-------------
+ prebuilt/Android.mk             |  6 +++-
+ 8 files changed, 74 insertions(+), 43 deletions(-)
+ create mode 100644 etc/init.recovery.service.rc
+
+diff --git a/Android.mk b/Android.mk
+index aedb3f9..2e7997d 100755
+--- a/Android.mk
++++ b/Android.mk
+@@ -233,6 +233,16 @@ ifeq ($(TW_FORCE_USE_BUSYBOX), true)
+ else
+     TW_USE_TOOLBOX := true
+ endif
++endif
++
++# pisces: the 3.4 kernel only provides the legacy f_mtp char device
++# (/dev/mtp_usb), the ffs-based MTP of Android 9 needs a newer f_fs.
++ifeq ($(TW_MTP_LEGACY),true)
++ifeq ($(TW_EXCLUDE_MTP),)
++    LOCAL_CFLAGS += -DTW_HAS_LEGACY_MTP
++    LOCAL_SHARED_LIBRARIES += libtwrpmtp-legacy
++endif
++else ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 28; echo $$?),0)
+ ifeq ($(TW_EXCLUDE_MTP),)
+     LOCAL_SHARED_LIBRARIES += libtwrpmtp-ffs
+ endif
+@@ -897,7 +907,9 @@ ifeq ($(shell test $(PLATFORM_SDK_VERSION) -le 25; echo $$?),0)
+ include $(commands_TWRP_local_path)/bootloader_message/Android.mk
+ endif
+ 
+-ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 28; echo $$?),0)
++ifeq ($(TW_MTP_LEGACY),true)
++    include $(commands_TWRP_local_path)/mtp/legacy/Android.mk
++else ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 28; echo $$?),0)
+     include $(commands_TWRP_local_path)/mtp/ffs/Android.mk
+ else
+     include $(commands_TWRP_local_path)/mtp/legacy/Android.mk
+diff --git a/data.cpp b/data.cpp
+index bc31a65..f200498 100755
+--- a/data.cpp
++++ b/data.cpp
+@@ -889,9 +889,11 @@ void DataManager::SetDefaultValues()
+ #else
+ 	LOGINFO("TW_EXCLUDE_MTP := true\n");
+ 	mConst.SetValue("tw_has_mtp", "0");
+-	mConst.SetValue("tw_mtp_enabled", "0");
++	mConst.SetValue("tw_mtp_enabled", "1");
+ #endif
+-	mPersist.SetValue("tw_mount_system_ro", "2");
++	// W2017: mounting /system read-write breaks dm-verity on this device, so
++	// default to keeping it read-only (1 = user already chose read-only).
++	mPersist.SetValue("tw_mount_system_ro", "1");
+ 	mPersist.SetValue("tw_never_show_system_ro_page", "0");
+ 	mPersist.SetValue("tw_language", EXPAND(TW_DEFAULT_LANGUAGE));
+ 	LOGINFO("LANG: %s\n", EXPAND(TW_DEFAULT_LANGUAGE));
+diff --git a/etc/init.rc b/etc/init.rc
+index a2bef2b..f15d47f 100644
+--- a/etc/init.rc
++++ b/etc/init.rc
+@@ -50,9 +50,8 @@ on init
+ 
+ on fs
+     mount pstore pstore /sys/fs/pstore
+-    mkdir /dev/usb-ffs 0770 shell shell
+-    mkdir /dev/usb-ffs/adb 0770 shell shell
+-    mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000
++    # /dev/usb-ffs is created and mounted by init.recovery.usb.rc before adbd
++    # starts; mounting it twice frees the functionfs instance.
+ 
+ on boot
+     ifup lo
+@@ -104,22 +103,16 @@ on property:sys.powerctl=*
+    powerctl ${sys.powerctl}
+ 
+ service ueventd /sbin/ueventd
+-    critical
++    # critical  (removed: legacy kernel has no SELinux policy for these services)
+     seclabel u:r:ueventd:s0
+ 
+-service adbd /sbin/adbd --root_seclabel=u:r:su:s0 --device_banner=recovery
++service adbd /sbin/adbd --device_banner=recovery
+     disabled
+     socket adbd stream 660 system system
+-    seclabel u:r:adbd:s0
+ 
+ # Always start adbd on userdebug and eng builds
+ on property:ro.debuggable=1
+     #write /sys/class/android_usb/android0/enable 1
+     #start adbd
+-    setprop service.adb.root 1
+ 
+-# Restart adbd so it can run as root
+-on property:service.adb.root=1
+-    write /sys/class/android_usb/android0/enable 0
+-    restart adbd
+-    write /sys/class/android_usb/android0/enable 1
++# do not restart adbd on service.adb.root: it re-enumerates the USB gadget
+diff --git a/etc/init.recovery.hlthchrg25.rc b/etc/init.recovery.hlthchrg25.rc
+index 62b2489..0540fe7 100644
+--- a/etc/init.recovery.hlthchrg25.rc
++++ b/etc/init.recovery.hlthchrg25.rc
+@@ -1,5 +1,5 @@
+ # healthd for pre Android 8.0
+ 
+ service healthd /sbin/healthd -r
+-    critical
++    # critical  (removed: legacy kernel has no SELinux policy for these services)
+     seclabel u:r:healthd:s0
+diff --git a/etc/init.recovery.hlthchrg26.rc b/etc/init.recovery.hlthchrg26.rc
+index 8a49c86..97e73c8 100644
+--- a/etc/init.recovery.hlthchrg26.rc
++++ b/etc/init.recovery.hlthchrg26.rc
+@@ -1,5 +1,5 @@
+ # charger for Android 8.0 and up
+ 
+ service charger /charger -r
+-    critical
++    # critical  (removed: legacy kernel has no SELinux policy for these services)
+     seclabel u:r:charger:s0
+diff --git a/etc/init.recovery.service.rc b/etc/init.recovery.service.rc
+new file mode 100644
+index 0000000..767a682
+--- /dev/null
++++ b/etc/init.recovery.service.rc
+@@ -0,0 +1,7 @@
++on boot
++
++# For starting recovery on 5.0 and newer.
++# Wrapped in a shell script so stdout/stderr and TWRP's own log end up in the
++# kernel log, which is the only channel available when the display is dark.
++service recovery /sbin/twrp-start.sh
++    seclabel u:r:recovery:s0
+diff --git a/etc/init.recovery.usb.rc b/etc/init.recovery.usb.rc
+index 8ef20e0..f10b805 100644
+--- a/etc/init.recovery.usb.rc
++++ b/etc/init.recovery.usb.rc
+@@ -1,30 +1,43 @@
+-on fs
+-    write /sys/class/android_usb/android0/enable 0
+-    write /sys/class/android_usb/android0/idVendor 18D1
+-    write /sys/class/android_usb/android0/idProduct D001
+-    write /sys/class/android_usb/android0/f_ffs/aliases adb
+-    write /sys/class/android_usb/android0/functions adb
+-    write /sys/class/android_usb/android0/iManufacturer ${ro.product.manufacturer}
+-    write /sys/class/android_usb/android0/iProduct ${ro.product.model}
+-    write /sys/class/android_usb/android0/iSerial ${ro.serialno}
++# USB gadget setup via configfs (legacy android_usb gadget is not built).
++#
++# Order matters: the configfs "ffs.adb" function creates the functionfs
++# instance, and only after that can functionfs be mounted and adbd opened.
++# The UDC is bound last, when adbd already published the adb descriptors.
+ 
+-on property:sys.usb.config=none
+-    write /sys/class/android_usb/android0/enable 0
+-    write /sys/class/android_usb/android0/bDeviceClass 0
+-
+-on property:sys.usb.config=mass_storage,adb
+-    write /sys/class/android_usb/android0/enable 0
+-    write /sys/class/android_usb/android0/functions ${sys.usb.config}
+-    write /sys/class/android_usb/android0/enable 1
++on init
++    mkdir /config 0775 root system
++    mount configfs none /config
+ 
+-on property:sys.usb.config=mtp,adb
+-    write /sys/class/android_usb/android0/enable 0
+-    write /sys/class/android_usb/android0/functions ${sys.usb.config}
+-    write /sys/class/android_usb/android0/enable 1
++on boot
++    mkdir /config/usb_gadget/g1 0777 0 0
++    write /config/usb_gadget/g1/idVendor 0x04E8
++    write /config/usb_gadget/g1/idProduct 0x6860
++    write /config/usb_gadget/g1/bcdUSB 0x0200
++    write /config/usb_gadget/g1/bcdDevice 0x0200
++    mkdir /config/usb_gadget/g1/strings/0x409 0777 0 0
++    write /config/usb_gadget/g1/strings/0x409/serialnumber ${ro.serialno}
++    write /config/usb_gadget/g1/strings/0x409/manufacturer Samsung
++    write /config/usb_gadget/g1/strings/0x409/product SM-W2017
++    mkdir /config/usb_gadget/g1/configs/b.1 0777 0 0
++    mkdir /config/usb_gadget/g1/configs/b.1/strings/0x409 0777 0 0
++    write /config/usb_gadget/g1/configs/b.1/MaxPower 500
++    mkdir /config/usb_gadget/g1/functions/ffs.adb 0777 0 0
++    mkdir /config/usb_gadget/g1/functions/mtp.gs0 0777 0 0
++    symlink /config/usb_gadget/g1/functions/ffs.adb /config/usb_gadget/g1/configs/b.1/ffs.adb
++    symlink /config/usb_gadget/g1/functions/mtp.gs0 /config/usb_gadget/g1/configs/b.1/mtp.gs0
++    mkdir /dev/usb-ffs 0770 shell shell
++    mkdir /dev/usb-ffs/adb 0770 shell shell
++    mount functionfs adb /dev/usb-ffs/adb uid=2000,gid=2000
+     start adbd
+ 
++on property:init.svc.adbd=running
++    write /config/usb_gadget/g1/UDC 6a00000.dwc3
++
++on property:sys.usb.config=none
++    setprop sys.usb.state none
++
+ on property:sys.usb.config=adb
+-    write /sys/class/android_usb/android0/enable 0
+-    write /sys/class/android_usb/android0/functions ${sys.usb.config}
+-    write /sys/class/android_usb/android0/enable ${service.adb.root}
+-    start adbd
++    setprop sys.usb.state adb
++
++on property:sys.usb.config=mtp,adb
++    setprop sys.usb.state mtp,adb
+diff --git a/prebuilt/Android.mk b/prebuilt/Android.mk
+index 17636ae..3bbbd4f 100644
+--- a/prebuilt/Android.mk
++++ b/prebuilt/Android.mk
+@@ -158,7 +158,11 @@ else
+     TW_EXCLUDE_MTP := true
+ endif
+ 
+-ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 28; echo $$?),0)
++ifeq ($(TW_MTP_LEGACY),true)
++ifneq ($(TW_EXCLUDE_MTP), true)
++    RELINK_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libtwrpmtp-legacy.so
++endif
++else ifeq ($(shell test $(PLATFORM_SDK_VERSION) -ge 28; echo $$?),0)
+ ifneq ($(TW_EXCLUDE_MTP), true)
+     RELINK_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libtwrpmtp-ffs.so
+     RELINK_SOURCE_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libasyncio.so
+-- 
+2.53.0
+

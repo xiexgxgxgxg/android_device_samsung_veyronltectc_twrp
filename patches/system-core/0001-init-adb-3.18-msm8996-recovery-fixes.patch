@@ -1,0 +1,436 @@
+From bb1fd4eff3af39de6410be4cac8fba856b761465 Mon Sep 17 00:00:00 2001
+From: xiexgxgxgxg <xiangtaozichidexie@gmail.com>
+Date: Mon, 16 Nov 2026 18:02:14 +0800
+Subject: [PATCH 1/2] init/adb: 3.18 msm8996 recovery fixes
+
+- init: skip mmap_rnd_bits hardening when the sysctl is missing
+- init: restorecon/init and property_set null guards
+- init: skip SELinux initialization on this kernel
+- init: breadcrumb markers and fatal-error persistence for debugging
+- adb: adbd never drops privileges in recovery
+
+Change-Id: I2a93736949717c9f964f0fd995c92033637d7f84
+---
+ adb/daemon/main.cpp       |  3 ++
+ init/init.cpp             | 96 +++++++++++++++++++++++++++++++++++++--
+ init/log.cpp              | 49 ++++++++++++++++----
+ init/property_service.cpp |  2 +
+ init/security.cpp         | 15 +++++-
+ init/selinux.cpp          |  4 ++
+ init/service.cpp          |  6 ++-
+ init/subcontext.cpp       |  3 +-
+ libcutils/fs_config.cpp   |  8 ++--
+ 9 files changed, 166 insertions(+), 20 deletions(-)
+
+diff --git a/adb/daemon/main.cpp b/adb/daemon/main.cpp
+index d064d0d..67a1c99 100644
+--- a/adb/daemon/main.cpp
++++ b/adb/daemon/main.cpp
+@@ -60,6 +60,9 @@ static bool should_drop_capabilities_bounding_set() {
+ }
+ 
+ static bool should_drop_privileges() {
++    // Recovery build: adbd always runs as root so that any adb client, on any
++    // host, gets a root shell. TWRP relies on this and ro.secure is 0 here.
++    return false;
+ #if defined(ALLOW_ADBD_ROOT)
+     // The properties that affect `adb root` and `adb unroot` are ro.secure and
+     // ro.debuggable. In this context the names don't make the expected behavior
+diff --git a/init/init.cpp b/init/init.cpp
+index fc58eea..5dc21f7 100644
+--- a/init/init.cpp
++++ b/init/init.cpp
+@@ -28,6 +28,7 @@
+ #include <sys/mount.h>
+ #include <sys/signalfd.h>
+ #include <sys/sysmacros.h>
++#include <ucontext.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+ 
+@@ -310,6 +311,8 @@ void HandleControlMessage(const std::string& msg, const std::string& name, pid_t
+                << "': " << static_cast<std::underlying_type<ControlTarget>::type>(function.target);
+ }
+ 
++static void veyron_mark_at(const char* tag, int slot);
++
+ static Result<Success> wait_for_coldboot_done_action(const BuiltinArguments& args) {
+     Timer t;
+ 
+@@ -323,9 +326,15 @@ static Result<Success> wait_for_coldboot_done_action(const BuiltinArguments& arg
+     // property. We still panic if it takes more than a minute though,
+     // because any build that slow isn't likely to boot at all, and we'd
+     // rather any test lab devices fail back to the bootloader.
++    veyron_mark_at("W_IN", 12);
+     if (wait_for_file(COLDBOOT_DONE, 60s) < 0) {
+-        LOG(FATAL) << "Timed out waiting for " COLDBOOT_DONE;
++        // Legacy debugging: report the timeout through the breadcrumb channel
++        // instead of aborting, so the boot can continue and we can see how far
++        // it gets without ueventd.
++        veyron_mark_at("W_TIMEOUT", 13);
++        return Success();
+     }
++    veyron_mark_at("W_OK", 14);
+ 
+     property_set("ro.boottime.init.cold_boot_wait", std::to_string(t.duration().count()));
+     return Success();
+@@ -543,6 +552,73 @@ static void InstallSigtermHandler() {
+     register_epoll_handler(sigterm_signal_fd, HandleSigtermSignal);
+ }
+ 
++
++// --- W2017 debugging breadcrumbs -------------------------------------------
++// Write a small tag straight into the tail of the persdata partition, deriving
++// the device number from sysfs so no ueventd or devtmpfs is required.
++#include <sys/sysmacros.h>
++#include <sys/stat.h>
++#include <fcntl.h>
++
++static void veyron_mark_at(const char* tag, int slot) {
++    char b[32] = {};
++    int fd = open("/sys/block/sda/sda20/dev", O_RDONLY);
++    if (fd < 0) return;
++    ssize_t n = read(fd, b, sizeof(b) - 1);
++    close(fd);
++    if (n <= 0) return;
++    unsigned int maj = 0, min = 0;
++    int i = 0;
++    while (b[i] >= '0' && b[i] <= '9') maj = maj * 10 + (b[i++] - '0');
++    if (b[i] == ':') i++;
++    while (b[i] >= '0' && b[i] <= '9') min = min * 10 + (b[i++] - '0');
++    if (!maj) return;
++    unlink("/dev/vmark");
++    if (mknod("/dev/vmark", S_IFBLK | 0600, makedev(maj, min)) != 0) return;
++    int out = open("/dev/vmark", O_WRONLY);
++    if (out < 0) return;
++    char line[64];
++    int len = snprintf(line, sizeof(line), "VEYRONMARK %s\n", tag);
++    pwrite(out, line, len, (off_t)8900000 + slot * 64);
++    fsync(out);
++    close(out);
++}
++
++static void veyron_sig_handler(int sig, siginfo_t* si, void* uc) {
++    ucontext_t* u = static_cast<ucontext_t*>(uc);
++    unsigned long pc = 0, lr = 0, sp = 0, fault = 0;
++    if (u) {
++        pc = u->uc_mcontext.pc;
++        lr = u->uc_mcontext.regs[30];
++        sp = u->uc_mcontext.sp;
++    }
++    if (si) fault = reinterpret_cast<unsigned long>(si->si_addr);
++    char tag[112];
++    int off = snprintf(tag, sizeof(tag), "SIG%d pc=%lx lr=%lx addr=%lx bt=",
++                       sig, pc, lr, fault);
++    unsigned long fp = u ? u->uc_mcontext.regs[29] : 0;
++    for (int i = 0; i < 6 && fp && off < (int)sizeof(tag) - 16; i++) {
++        unsigned long ra = *(unsigned long*)(fp + 8);
++        off += snprintf(tag + off, sizeof(tag) - off, "%lx ", ra);
++        fp = *(unsigned long*)fp;
++    }
++    veyron_mark_at(tag, 5);
++    for (;;) pause();
++}
++
++static void veyron_install_handlers() {
++    struct sigaction sa = {};
++    sa.sa_sigaction = veyron_sig_handler;
++    sigemptyset(&sa.sa_mask);
++    sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
++    sigaction(SIGSEGV, &sa, nullptr);
++    sigaction(SIGABRT, &sa, nullptr);
++    sigaction(SIGBUS, &sa, nullptr);
++    sigaction(SIGILL, &sa, nullptr);
++    sigaction(SIGFPE, &sa, nullptr);
++}
++// --------------------------------------------------------------------------
++
+ int main(int argc, char** argv) {
+     if (!strcmp(basename(argv[0]), "ueventd")) {
+         return ueventd_main(argc, argv);
+@@ -562,7 +638,10 @@ int main(int argc, char** argv) {
+         InstallRebootSignalHandlers();
+     }
+ 
++    veyron_install_handlers();
++    veyron_mark_at("BUILD=bt28-1750", 7);
+     bool is_first_stage = (getenv("INIT_SECOND_STAGE") == nullptr);
++    veyron_mark_at(is_first_stage ? "MAIN1" : "MAIN2", 6);
+ 
+     if (is_first_stage) {
+         boot_clock::time_point start_time = boot_clock::now();
+@@ -586,6 +665,7 @@ int main(int argc, char** argv) {
+         setgroups(arraysize(groups), groups);
+         mount("sysfs", "/sys", "sysfs", 0, NULL);
+         mount("selinuxfs", "/sys/fs/selinux", "selinuxfs", 0, NULL);
++        veyron_mark_at("F1_SYSFS", 0);
+ 
+         mknod("/dev/kmsg", S_IFCHR | 0600, makedev(1, 11));
+ 
+@@ -626,7 +706,9 @@ int main(int argc, char** argv) {
+         // We're in the kernel domain, so re-exec init to transition to the init domain now
+         // that the SELinux policy has been loaded.
+         if (selinux_android_restorecon("/init", 0) == -1) {
+-            PLOG(FATAL) << "restorecon failed of /init failed";
++            // SELinux policy loading is skipped on legacy kernels, so the
++            // restorecon of /init can fail. That must not kill init.
++            PLOG(WARNING) << "restorecon of /init failed, continuing";
+         }
+ 
+         setenv("INIT_SECOND_STAGE", "true", 1);
+@@ -647,6 +729,7 @@ int main(int argc, char** argv) {
+     // At this point we're in the second stage of init.
+     InitKernelLogging(argv);
+     LOG(INFO) << "init second stage started!";
++    veyron_mark_at("S2_STAGE2", 1);
+ 
+     // Set up a session keyring that all processes will have access to. It
+     // will hold things like FBE encryption keys. No process should override
+@@ -668,8 +751,13 @@ int main(int argc, char** argv) {
+     export_kernel_boot_props();
+ 
+     // Make the time that init started available for bootstat to log.
+-    property_set("ro.boottime.init", getenv("INIT_STARTED_AT"));
+-    property_set("ro.boottime.init.selinux", getenv("INIT_SELINUX_TOOK"));
++    // On legacy kernels SELinux initialisation is skipped, so INIT_SELINUX_TOOK
++    // (and in some paths INIT_STARTED_AT) can be absent. getenv() then returns
++    // nullptr and property_set(std::string) would strlen(NULL) and crash.
++    if (const char* started_at = getenv("INIT_STARTED_AT"))
++        property_set("ro.boottime.init", started_at);
++    if (const char* selinux_took = getenv("INIT_SELINUX_TOOK"))
++        property_set("ro.boottime.init.selinux", selinux_took);
+ 
+     // Set libavb version for Framework-only OTA match in Treble build.
+     const char* avb_version = getenv("INIT_AVB_VERSION");
+diff --git a/init/log.cpp b/init/log.cpp
+index 6198fc2..896236b 100644
+--- a/init/log.cpp
++++ b/init/log.cpp
+@@ -17,6 +17,8 @@
+ #include "log.h"
+ 
+ #include <fcntl.h>
++#include <sys/sysmacros.h>
++#include <sys/stat.h>
+ #include <linux/audit.h>
+ #include <string.h>
+ #include <unistd.h>
+@@ -30,6 +32,32 @@
+ namespace android {
+ namespace init {
+ 
++
++// Fallback logger used only on fatal errors: write the message straight into
++// the tail of persdata, deriving the device number from sysfs so it works even
++// when ueventd never ran and /dev has no block nodes.
++static void WriteFatalToPersdata(const char* msg) {
++    char devbuf[32] = {};
++    int fd = open("/sys/block/sda/sda20/dev", O_RDONLY);
++    if (fd < 0) return;
++    ssize_t n = read(fd, devbuf, sizeof(devbuf) - 1);
++    close(fd);
++    if (n <= 0) return;
++    unsigned int maj = 0, min = 0;
++    if (sscanf(devbuf, "%u:%u", &maj, &min) != 2) return;
++    unlink("/dev/veyronlog");
++    if (mknod("/dev/veyronlog", S_IFBLK | 0600, makedev(maj, min)) != 0) return;
++    int out = open("/dev/veyronlog", O_WRONLY);
++    if (out < 0) return;
++    char line[512];
++    int len = snprintf(line, sizeof(line), "VEYRONFATAL uptime0=%d %s\n", (int)time(nullptr), msg);
++    if (len > 0) {
++        pwrite(out, line, len, (off_t)8912896);
++        fsync(out);
++    }
++    close(out);
++}
++
+ static void InitAborter(const char* abort_message) {
+     // When init forks, it continues to use this aborter for LOG(FATAL), but we want children to
+     // simply abort instead of trying to reboot the system.
+@@ -41,25 +69,28 @@ static void InitAborter(const char* abort_message) {
+     // DoReboot() does a lot to try to shutdown the system cleanly.  If something happens to call
+     // LOG(FATAL) in the shutdown path, we want to catch this and immediately use the syscall to
+     // reboot instead of recursing here.
+-    static bool has_aborted = false;
+-    if (!has_aborted) {
+-        has_aborted = true;
+-        // Do not queue "shutdown" trigger since we want to shutdown immediately and it's not likely
+-        // that we can even run the ActionQueue at this point.
+-        DoReboot(ANDROID_RB_RESTART2, "reboot", "bootloader", false);
+-    } else {
+-        RebootSystem(ANDROID_RB_RESTART2, "bootloader");
++    // DEBUG: do not reboot to the bootloader on a fatal error. Hang here
++    // instead so the kernel stays alive and its logger can persist the message.
++    LOG(ERROR) << "DEBUG_FATAL_HANG: init hit a fatal error, hanging instead of reboot";
++    WriteFatalToPersdata(abort_message);
++    for (;;) {
++        pause();
+     }
+ }
+ 
+ void InitKernelLogging(char* argv[]) {
+     // Make stdin/stdout/stderr all point to /dev/null.
+     int fd = open("/sys/fs/selinux/null", O_RDWR);
++    if (fd == -1) {
++        // pisces: this 3.4 kernel may not provide selinuxfs; fall back to /dev/null.
++        mknod("/dev/null", S_IFCHR | 0666, makedev(1, 3));
++        fd = open("/dev/null", O_RDWR);
++    }
+     if (fd == -1) {
+         int saved_errno = errno;
+         android::base::InitLogging(argv, &android::base::KernelLogger, InitAborter);
+         errno = saved_errno;
+-        PLOG(FATAL) << "Couldn't open /sys/fs/selinux/null";
++        PLOG(FATAL) << "Couldn't open /dev/null";
+     }
+     dup2(fd, 0);
+     dup2(fd, 1);
+diff --git a/init/property_service.cpp b/init/property_service.cpp
+index 53229eb..5c564e2 100644
+--- a/init/property_service.cpp
++++ b/init/property_service.cpp
+@@ -117,6 +117,8 @@ void property_init() {
+ }
+ static bool CheckMacPerms(const std::string& name, const char* target_context,
+                           const char* source_context, const ucred& cr) {
++    // pisces recovery: no SELinux policy on the 3.4 kernel; allow property writes.
++    return true;
+     if (!target_context || !source_context) {
+         return false;
+     }
+diff --git a/init/security.cpp b/init/security.cpp
+index a3494a2..e3032df 100644
+--- a/init/security.cpp
++++ b/init/security.cpp
+@@ -153,8 +153,16 @@ Result<Success> SetMmapRndBitsAction(const BuiltinArguments&) {
+     // uml does not support mmap_rnd_bits
+     return Success();
+ #elif defined(__aarch64__)
++    // Some 3.18 kernels (Samsung msm8996) have no mmap_rnd_bits sysctl at all.
++    // Aborting here kills init before recovery can start, so skip the
++    // hardening step when the kernel does not expose the tunable.
++    if (access(MMAP_RND_PATH, F_OK) != 0) {
++        LOG(WARNING) << "mmap_rnd_bits missing (arm64), skipping hardening";
++        return Success();
++    }
+     // arm64 supports 18 - 33 bits depending on pagesize and VA_SIZE
+-    if (SetMmapRndBitsMin(33, 24, false) && SetMmapRndBitsMin(16, 16, true)) {
++    if (SetMmapRndBitsMin(33, 24, false) &&
++        (access(MMAP_RND_COMPAT_PATH, F_OK) != 0 || SetMmapRndBitsMin(16, 16, true))) {
+         return Success();
+     }
+ #elif defined(__x86_64__)
+@@ -163,6 +171,11 @@ Result<Success> SetMmapRndBitsAction(const BuiltinArguments&) {
+         return Success();
+     }
+ #elif defined(__arm__) || defined(__i386__)
++    // pisces: 3.4 kernel has no mmap_rnd_bits sysctl; skip this hardening step.
++    if (access(MMAP_RND_PATH, F_OK) != 0) {
++        LOG(WARNING) << "mmap_rnd_bits not supported by kernel, skipping";
++        return Success();
++    }
+     // check to see if we're running on 64-bit kernel
+     bool h64 = !access(MMAP_RND_COMPAT_PATH, F_OK);
+     // supported 32-bit architecture must have 16 bits set
+diff --git a/init/selinux.cpp b/init/selinux.cpp
+index 0ba5c4a..5563e94 100644
+--- a/init/selinux.cpp
++++ b/init/selinux.cpp
+@@ -383,6 +383,10 @@ bool LoadPolicy() {
+ 
+ void SelinuxInitialize() {
+     Timer t;
++    // pisces: 3.4.35 kernel cannot load Android 9 SELinux policy;
++    // skip it so recovery can boot (TWRP runs permissive).
++    LOG(INFO) << "SELinux initialization skipped (pisces 3.4 kernel)";
++    return;
+ 
+     LOG(INFO) << "Loading SELinux policy";
+     if (!LoadPolicy()) {
+diff --git a/init/service.cpp b/init/service.cpp
+index 3ddd7ee..3f462cc 100644
+--- a/init/service.cpp
++++ b/init/service.cpp
+@@ -313,7 +313,7 @@ void Service::SetProcessAttributes() {
+             PLOG(FATAL) << "setuid failed for " << name_;
+         }
+     }
+-    if (!seclabel_.empty()) {
++    if (!seclabel_.empty() && is_selinux_enabled()) {
+         if (setexeccon(seclabel_.c_str()) < 0) {
+             PLOG(FATAL) << "cannot setexeccon('" << seclabel_ << "') for " << name_;
+         }
+@@ -830,12 +830,14 @@ Result<Success> Service::Start() {
+     std::string scon;
+     if (!seclabel_.empty()) {
+         scon = seclabel_;
+-    } else {
++    } else if (is_selinux_enabled()) {
+         auto result = ComputeContextFromExecutable(args_[0]);
+         if (!result) {
+             return result.error();
+         }
+         scon = *result;
++    } else {
++        scon = "u:r:su:s0";
+     }
+ 
+     LOG(INFO) << "starting service '" << name_ << "'...";
+diff --git a/init/subcontext.cpp b/init/subcontext.cpp
+index fdb4641..bb00bb1 100644
+--- a/init/subcontext.cpp
++++ b/init/subcontext.cpp
+@@ -20,6 +20,7 @@
+ #include <poll.h>
+ #include <sys/socket.h>
+ #include <unistd.h>
++#include <selinux/selinux.h>
+ 
+ #include <android-base/file.h>
+ #include <android-base/logging.h>
+@@ -357,7 +358,7 @@ Result<std::vector<std::string>> Subcontext::ExpandArgs(const std::vector<std::s
+ static std::vector<Subcontext> subcontexts;
+ 
+ std::vector<Subcontext>* InitializeSubcontexts() {
+-    if (SelinuxHasVendorInit()) {
++    if (is_selinux_enabled() && SelinuxHasVendorInit()) {
+         for (const auto& [path_prefix, secontext] : paths_and_secontexts) {
+             subcontexts.emplace_back(path_prefix, secontext);
+         }
+diff --git a/libcutils/fs_config.cpp b/libcutils/fs_config.cpp
+index 5b79b1d..b0f77f6 100644
+--- a/libcutils/fs_config.cpp
++++ b/libcutils/fs_config.cpp
+@@ -81,7 +81,9 @@ static const struct fs_path_config android_dirs[] = {
+     { 00771, AID_SYSTEM,       AID_SYSTEM,       0, "data" },
+     { 00755, AID_ROOT,         AID_SYSTEM,       0, "mnt" },
+     { 00755, AID_ROOT,         AID_SHELL,        0, "product/bin" },
+-    { 00750, AID_ROOT,         AID_SHELL,        0, "sbin" },
++    // pisces: recovery ramdisk needs /sbin world-executable; adbd drops to
++    // uid shell without group shell, so 0750 root:shell gives EACCES.
++    { 00755, AID_ROOT,         AID_ROOT,         0, "sbin" },
+     { 00777, AID_ROOT,         AID_ROOT,         0, "sdcard" },
+     { 00751, AID_ROOT,         AID_SDCARD_R,     0, "storage" },
+     { 00755, AID_ROOT,         AID_SHELL,        0, "system/bin" },
+@@ -149,7 +151,7 @@ static const struct fs_path_config android_files[] = {
+     { 00444, AID_ROOT,      AID_ROOT,      0, oem_conf_dir + 1 },
+     { 00444, AID_ROOT,      AID_ROOT,      0, oem_conf_file + 1 },
+     { 00600, AID_ROOT,      AID_ROOT,      0, "product/build.prop" },
+-    { 00750, AID_ROOT,      AID_SHELL,     0, "sbin/fs_mgr" },
++    { 00755, AID_ROOT,      AID_ROOT,      0, "sbin/fs_mgr" },
+     { 00755, AID_ROOT,      AID_SHELL,     0, "system/bin/crash_dump32" },
+     { 00755, AID_ROOT,      AID_SHELL,     0, "system/bin/crash_dump64" },
+     { 00755, AID_ROOT,      AID_SHELL,     0, "system/bin/debuggerd" },
+@@ -197,7 +199,7 @@ static const struct fs_path_config android_files[] = {
+     { 00640, AID_ROOT,      AID_SHELL,     0, "fstab.*" },
+     { 00750, AID_ROOT,      AID_SHELL,     0, "init*" },
+     { 00755, AID_ROOT,      AID_SHELL,     0, "product/bin/*" },
+-    { 00750, AID_ROOT,      AID_SHELL,     0, "sbin/*" },
++    { 00755, AID_ROOT,      AID_ROOT,      0, "sbin/*" },
+     { 00755, AID_ROOT,      AID_SHELL,     0, "system/bin/*" },
+     { 00755, AID_ROOT,      AID_ROOT,      0, "system/lib/valgrind/*" },
+     { 00755, AID_ROOT,      AID_ROOT,      0, "system/lib64/valgrind/*" },
+-- 
+2.53.0
+
