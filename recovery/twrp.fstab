@@ -12,3 +12,8 @@
 /modemst1   emmc /dev/block/bootdevice/by-name/modemst1    flags=backup=1;subpartitionof=/efs
 /modemst2   emmc /dev/block/bootdevice/by-name/modemst2    flags=backup=1;subpartitionof=/efs
 /persist    ext4 /dev/block/bootdevice/by-name/persist     flags=backup=1;display="Persist"
+# microSD.  The kernel exposes it as mmcblk0 (the eMMC on this board is UFS,
+# so mmcblk0 is always the card), FAT16/FAT32 in practice.  Without this entry
+# recovery never mounts it, which looks like "no SD card" even though the
+# device node exists.
+/external_sd    vfat    /dev/block/mmcblk0p1    flags=display="MicroSD";storage;wipeingui;removable
